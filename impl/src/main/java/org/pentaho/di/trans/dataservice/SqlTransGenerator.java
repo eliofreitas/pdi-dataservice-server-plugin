@@ -52,6 +52,8 @@ import org.pentaho.di.trans.steps.sort.SortRowsMeta;
 
 import java.util.List;
 import java.util.stream.Collectors;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import static org.pentaho.di.core.row.ValueMetaInterface.TYPE_INTEGER;
 import static org.pentaho.di.core.row.ValueMetaInterface.TYPE_NONE;
@@ -132,9 +134,28 @@ public class SqlTransGenerator {
       lastStep = generateIifStep( iifField, transMeta, lastStep );
     }
 
-    // We optionally need to aggregate the data
-    //
-    if ( sql.getWhereCondition() != null && !sql.getWhereCondition().isEmpty() ) {
+    if(sql.getWhereCondition() != null && !sql.getWhereCondition().isEmpty() &&
+            sql.getWhereCondition().getCondition().getLeftValuename().contains("FORMAT_DATE")) {
+      //Parsing arguments for POC
+      Pattern functionPattern = Pattern.compile( "FORMAT_DATE*(\\()(.*?)\\,(.*?)\\)");
+      Matcher matcher = functionPattern.matcher(sql.getWhereCondition().getCondition().getLeftValuename());
+      matcher.find();
+      String fieldName = matcher.group(2);
+      String temporaryFieldName = matcher.group(2) + "_temp";
+      //creating calculatorStep
+      StepMeta calculatorStep = generateFormattingCalculator(sql.getWhereCondition().getCondition(),
+              temporaryFieldName,
+              fieldName);
+      lastStep = addToTrans(calculatorStep, transMeta, lastStep);
+      //filter step
+      StepMeta filterStep = generateFilterForFormattedValue(sql.getWhereCondition().getCondition(),
+              temporaryFieldName,
+              fieldName);
+      lastStep = addToTrans(filterStep, transMeta, lastStep);
+      //select step for cleaning
+      StepMeta selectStep = generateSelectForFormattedValue(temporaryFieldName, fieldName);
+      lastStep = addToTrans(selectStep, transMeta, lastStep);
+    } else if ( sql.getWhereCondition() != null && !sql.getWhereCondition().isEmpty()) {
       StepMeta filterStep = generateFilterStep( sql.getWhereCondition().getCondition(), false );
       lastStep = addToTrans( filterStep, transMeta, lastStep );
     }
@@ -436,6 +457,53 @@ public class SqlTransGenerator {
     xLocation += 100;
     stepMeta.setDraw( true );
     return stepMeta;
+  }
+
+  private StepMeta generateSelectForFormattedValue(String temporaryFieldName, String fieldName) {
+    SelectValuesMeta selectMeta = new SelectValuesMeta();
+    String fieldsToDelete [] = {temporaryFieldName};
+    selectMeta.setDeleteName(fieldsToDelete);
+    StepMeta stepMetaSelect =  new StepMeta("deleting extra fields", selectMeta);
+    stepMetaSelect.setLocation( xLocation, 50 );
+    xLocation += 100;
+    stepMetaSelect.setDraw( true );
+    return stepMetaSelect;
+  }
+
+  private StepMeta generateFilterForFormattedValue(Condition condition, String temporaryFieldName, String fieldName) {
+    Condition temporaryCondition = new Condition(
+            temporaryFieldName,
+            condition.getFunction(),
+            condition.getRightValuename(),
+            condition.getRightExact());
+    condition.setLeftValuename(temporaryFieldName);
+    FilterRowsMeta meta = new FilterRowsMeta();
+    meta.setCondition( temporaryCondition );
+    StepMeta stepMeta = new StepMeta("filter for formatted values", meta );
+    stepMeta.setLocation( xLocation, 50 );
+    xLocation += 100;
+    stepMeta.setDraw( true );
+    return  stepMeta;
+  }
+
+  private StepMeta generateFormattingCalculator(Condition condition, String temporaryFieldName, String fieldName) {
+    CalculatorMeta meta = new CalculatorMeta();
+    CalculatorMetaFunction function = new CalculatorMetaFunction();
+    function.setFieldName(temporaryFieldName);
+    function.setFieldA(fieldName);
+    function.setValueType(TYPE_INTEGER);
+    function.setRemovedFromResult(false);
+    function.setCalcType(CalculatorMetaFunction.CALC_YEAR_OF_DATE);//only years accepted for this POC
+    function.setValueLength(5);
+    function.setValuePrecision(5);
+    function.setConversionMask("#.#");
+    CalculatorMetaFunction array[] = {function};
+    meta.setCalculation(array);
+    StepMeta CalculatorStepMeta = new StepMeta( "formatting dates", meta );
+    CalculatorStepMeta.setLocation( xLocation, 50 );
+    xLocation += 100;
+    CalculatorStepMeta.setDraw( true );
+    return CalculatorStepMeta;
   }
 
   private StepMeta generateFilterStep( Condition condition, boolean isHaving ) {
